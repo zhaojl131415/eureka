@@ -300,6 +300,7 @@ public class DefaultEurekaServerConfig implements EurekaServerConfig {
                 namespace + "peerNodeConnectionIdleTimeoutSeconds", 30).get();
     }
 
+    // 获取增量数据队列保留时间, 默认3分钟
     @Override
     public long getRetentionTimeInMSInDeltaQueue() {
         return configInstance.getLongProperty(
@@ -307,6 +308,7 @@ public class DefaultEurekaServerConfig implements EurekaServerConfig {
                 .get();
     }
 
+    // 获取增量数据队列定时任务时间间隔, 默认30s
     @Override
     public long getDeltaRetentionTimerIntervalInMs() {
         return configInstance.getLongProperty(

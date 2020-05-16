@@ -129,6 +129,7 @@ public class Applications {
 
     /**
      * Gets the list of all registered <em>applications</em> from eureka.
+     * 从eureka获取所有已注册的<em>应用程序</em>的列表。
      *
      * @return list containing all applications registered with eureka.
      */
@@ -254,9 +255,11 @@ public class Applications {
     }
 
     /**
+     * 获取整合HashCode
      * Gets the reconciliation hashcode. The hashcode is used to determine
      * whether the applications list has changed since the last time it was
      * acquired.
+     * hashcode用于确定自上次获取应用程序列表以来，应用程序列表是否发生了更改。
      * 
      * @param instanceCountMap
      *            the instance count map to use for generating the hash

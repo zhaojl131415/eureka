@@ -120,7 +120,7 @@ public class InstanceResource {
         boolean isSuccess = registry.renew(app.getName(), id, isFromReplicaNode);
 
         // Not found in the registry, immediately ask for a register 没有在注册表中找到，立即要求注册
-        // 如果心跳续约失败:微服务不存在或者已过期: 返回404
+        // 如果心跳续约失败: 当微服务被剔除了或者已过期或者压根不存在时: 返回404
         if (!isSuccess) {
             logger.warn("Not Found (Renew): {} - {}", app.getName(), id);
             return Response.status(Status.NOT_FOUND).build();

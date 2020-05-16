@@ -1340,8 +1340,8 @@ public class InstanceInfo {
     }
 
     public enum ActionType {
-        ADDED, // Added in the discovery server
-        MODIFIED, // Changed in the discovery server
+        ADDED, // Added in the discovery server 发现新的微服务
+        MODIFIED, // Changed in the discovery server 修改
         DELETED
         // Deleted from the discovery server
     }

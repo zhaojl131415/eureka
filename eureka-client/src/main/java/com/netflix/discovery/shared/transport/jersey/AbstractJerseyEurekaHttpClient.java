@@ -2,6 +2,7 @@ package com.netflix.discovery.shared.transport.jersey;
 
 import com.netflix.appinfo.InstanceInfo;
 import com.netflix.appinfo.InstanceInfo.InstanceStatus;
+import com.netflix.discovery.DiscoveryClient;
 import com.netflix.discovery.shared.Application;
 import com.netflix.discovery.shared.Applications;
 import com.netflix.discovery.shared.transport.EurekaHttpClient;
@@ -43,6 +44,14 @@ public abstract class AbstractJerseyEurekaHttpClient implements EurekaHttpClient
         logger.debug("Created client for url: {}", serviceUrl);
     }
 
+    /**
+     * 服务注册, 发送post请求
+     * 调用来源:
+     * 1 eureka server集群间节点同步/心跳续约失败后注册 {@link com.netflix.eureka.cluster.PeerEurekaNode#register(com.netflix.appinfo.InstanceInfo)}
+     * 2 eureka client向server注册 {@link DiscoveryClient#register()}
+     * @param info
+     * @return
+     */
     @Override
     public EurekaHttpResponse<Void> register(InstanceInfo info) {
         // 组装url
@@ -50,6 +59,7 @@ public abstract class AbstractJerseyEurekaHttpClient implements EurekaHttpClient
         ClientResponse response = null;
         try {
             // serviceUrl:配置文件中defaultZone
+            // 拼接为http://localhost:8761/eureka/apps/微服务名
             Builder resourceBuilder = jerseyClient.resource(serviceUrl).path(urlPath).getRequestBuilder();
             addExtraHeaders(resourceBuilder);
             // 发送post请求
@@ -75,6 +85,7 @@ public abstract class AbstractJerseyEurekaHttpClient implements EurekaHttpClient
         String urlPath = "apps/" + appName + '/' + id;
         ClientResponse response = null;
         try {
+            // 拼接为http://localhost:8761/eureka/apps/微服务名/微服务id
             Builder resourceBuilder = jerseyClient.resource(serviceUrl).path(urlPath).getRequestBuilder();
             addExtraHeaders(resourceBuilder);
             response = resourceBuilder.delete(ClientResponse.class);
@@ -90,7 +101,7 @@ public abstract class AbstractJerseyEurekaHttpClient implements EurekaHttpClient
     }
 
     /**
-     * 发送心跳连接
+     * 发送心跳
      * @param appName
      * @param id
      * @param info
@@ -103,6 +114,7 @@ public abstract class AbstractJerseyEurekaHttpClient implements EurekaHttpClient
         String urlPath = "apps/" + appName + '/' + id;
         ClientResponse response = null;
         try {
+            // 拼接为http://localhost:8761/eureka/apps/微服务名/微服务id
             WebResource webResource = jerseyClient.resource(serviceUrl)
                     .path(urlPath)
                     .queryParam("status", info.getStatus().toString())
@@ -174,11 +186,13 @@ public abstract class AbstractJerseyEurekaHttpClient implements EurekaHttpClient
         }
     }
 
+    // 全量拉取
     @Override
     public EurekaHttpResponse<Applications> getApplications(String... regions) {
         return getApplicationsInternal("apps/", regions);
     }
 
+    // 增量拉取
     @Override
     public EurekaHttpResponse<Applications> getDelta(String... regions) {
         return getApplicationsInternal("apps/delta", regions);

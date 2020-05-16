@@ -91,6 +91,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     // CircularQueues here for debugging/statistics purposes only
     private final CircularQueue<Pair<Long, String>> recentRegisteredQueue;
     private final CircularQueue<Pair<Long, String>> recentCanceledQueue;
+    // 最近(3分钟)改变过状态的微服务实例队列
     private ConcurrentLinkedQueue<RecentlyChangedItem> recentlyChangedQueue = new ConcurrentLinkedQueue<RecentlyChangedItem>();
 
     /**
@@ -136,6 +137,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
         // 最后一分钟心跳次数实例化, 传参: 取样间隔时间 60s 也就是一分钟
         this.renewsLastMin = new MeasuredRate(1000 * 60 * 1);
 
+        // 初始化 增量保留任务 的定时任务, 默认30s一次
         this.deltaRetentionTimer.schedule(getDeltaRetentionTask(),
                 serverConfig.getDeltaRetentionTimerIntervalInMs(),
                 serverConfig.getDeltaRetentionTimerIntervalInMs());
@@ -297,7 +299,9 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
             if (InstanceStatus.UP.equals(registrant.getStatus())) {
                 lease.serviceUp();
             }
+            // 注册时记录服务的操作类型为新增
             registrant.setActionType(ActionType.ADDED);
+            // 添加到最近改变过状态的微服务实例队列
             recentlyChangedQueue.add(new RecentlyChangedItem(lease));
             registrant.setLastUpdatedTimestamp();
             // 失效读写缓存
@@ -362,7 +366,9 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
                 String vip = null;
                 String svip = null;
                 if (instanceInfo != null) {
+                    // 服务操作类型
                     instanceInfo.setActionType(ActionType.DELETED);
+                    // 添加到最近改变过状态的微服务实例队列
                     recentlyChangedQueue.add(new RecentlyChangedItem(leaseToCancel));
                     instanceInfo.setLastUpdatedTimestamp();
                     vip = instanceInfo.getVIPAddress();
@@ -547,7 +553,9 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
                     if (replicaDirtyTimestamp > info.getLastDirtyTimestamp()) {
                         info.setLastDirtyTimestamp(replicaDirtyTimestamp);
                     }
+                    // 服务实例的操作类型
                     info.setActionType(ActionType.MODIFIED);
+                    // 添加到最近改变过状态的微服务实例队列
                     recentlyChangedQueue.add(new RecentlyChangedItem(lease));
                     info.setLastUpdatedTimestamp();
                     invalidateCache(appName, info.getVIPAddress(), info.getSecureVipAddress());
@@ -608,7 +616,9 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
                     if (replicaDirtyTimestamp > info.getLastDirtyTimestamp()) {
                         info.setLastDirtyTimestamp(replicaDirtyTimestamp);
                     }
+                    // 服务实例的操作类型
                     info.setActionType(ActionType.MODIFIED);
+                    // 添加到最近改变过状态的微服务实例队列
                     recentlyChangedQueue.add(new RecentlyChangedItem(lease));
                     info.setLastUpdatedTimestamp();
                     invalidateCache(appName, info.getVIPAddress(), info.getSecureVipAddress());
@@ -788,7 +798,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     }
 
     /**
-     * 读写缓存去真实数据获取全量数据
+     * 读写缓存去真实数据获取 全量数据
      *
      * This method will return applications with instances from all passed remote regions as well as the current region.
      * Thus, this gives a union view of instances from multiple regions. <br/>
@@ -933,7 +943,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     }
 
     /**
-     * 服务发现: 读写缓存去真实数据获取增量数据(当前方法过期)
+     * 服务发现: 读写缓存去真实数据获取 增量数据(当前方法过期)
      * Get the registry information about the delta changes. The deltas are
      * cached for a window specified by
      * {@link EurekaServerConfig#getRetentionTimeInMSInDeltaQueue()}. Subsequent
@@ -998,7 +1008,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     }
 
     /**
-     * 服务发现: 读写缓存去真实数据获取增量数据
+     * 服务发现: 读写缓存去真实数据获取 增量数据
      *
      * Gets the application delta also including instances from the passed remote regions, with the instances from the
      * local region. <br/>
@@ -1035,15 +1045,23 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
         Map<String, Application> applicationInstancesMap = new HashMap<String, Application>();
         try {
             write.lock();
+            /**
+             * 获取 最近改变过状态的微服务实例队列 的迭代器
+             *
+             * 队列数据保留的定时任务代码 {@link #getDeltaRetentionTask()}
+             */
             Iterator<RecentlyChangedItem> iter = this.recentlyChangedQueue.iterator();
             logger.debug("The number of elements in the delta queue is :{}", this.recentlyChangedQueue.size());
+            // 迭代
             while (iter.hasNext()) {
+                // 获取服务实例
                 Lease<InstanceInfo> lease = iter.next().getLeaseInfo();
                 InstanceInfo instanceInfo = lease.getHolder();
                 logger.debug("The instance id {} is found with status {} and actiontype {}",
                         instanceInfo.getId(), instanceInfo.getStatus().name(), instanceInfo.getActionType().name());
                 Application app = applicationInstancesMap.get(instanceInfo.getAppName());
                 if (app == null) {
+                    // 将服务实例封装成Application对象
                     app = new Application(instanceInfo.getAppName());
                     applicationInstancesMap.put(instanceInfo.getAppName(), app);
                     apps.addApplication(app);
@@ -1078,8 +1096,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
             // allApps 全量数据
             Applications allApps = getApplicationsFromMultipleRegions(remoteRegions);
             // apps 增量数据
-            // 为了增量数据和全量数据的hashCode同步
-            // 本地的数据hashcode + 增量hashCode 与服务器端传过来的hashCode是否相同
+            // 为了增量数据和全量数据的hashCode同步, 为了告诉客户端, 当前得到的数据就是全量数据
             apps.setAppsHashCode(allApps.getReconcileHashCode());
             return apps;
         } finally {
@@ -1453,16 +1470,21 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
         return rule.apply(r, existingLease, isReplication).status();
     }
 
-    // 增量保留任务定时器 30s一次
+    /**
+     * 增量保留任务定时器 30s一次
+     * 定期清理掉超过3分钟没有更新的微服务实例
+     * @return
+     */
     private TimerTask getDeltaRetentionTask() {
         return new TimerTask() {
 
             @Override
             public void run() {
+                // 获取 最近(3分钟)改变过状态的微服务实例队列 迭代器
                 Iterator<RecentlyChangedItem> it = recentlyChangedQueue.iterator();
                 while (it.hasNext()) {
+                    // 如果队列中的微服务实例的最后操作时间 < (当前时间 - 增量数据队列保留时间3分钟), 那么从队列中移除
                     if (it.next().getLastUpdateTime() <
-                            // 当前时间 - 3分钟
                             System.currentTimeMillis() - serverConfig.getRetentionTimeInMSInDeltaQueue()) {
                         it.remove();
                     } else {

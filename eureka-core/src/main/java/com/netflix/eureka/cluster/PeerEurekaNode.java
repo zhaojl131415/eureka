@@ -124,6 +124,12 @@ public class PeerEurekaNode {
     }
 
     /**
+     * 服务端服务注册
+     *
+     * 调用来源
+     * 1 服务端集群节点同步
+     * 2 服务端心跳续约失败, 发送注册
+     *
      * Sends the registration information of {@link InstanceInfo} receiving by
      * this node to the peer node represented by this class.
      *

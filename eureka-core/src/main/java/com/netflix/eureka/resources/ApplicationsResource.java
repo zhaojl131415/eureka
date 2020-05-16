@@ -100,6 +100,8 @@ public class ApplicationsResource {
 
     /**
      * 服务发现入口
+     * 服务注册时全量拉取本地注册表入口
+     *
      * Get information about all {@link com.netflix.discovery.shared.Applications}.
      * 获取所有Applications的信息。也就是我们常说的eureka服务注册表
      *
@@ -148,6 +150,7 @@ public class ApplicationsResource {
         }
 
         Key cacheKey = new Key(Key.EntityType.Application,
+                // 全量拉取
                 ResponseCacheImpl.ALL_APPS,
                 keyType, CurrentRequestVersion.get(), EurekaAccept.fromString(eurekaAccept), regions
         );
@@ -233,6 +236,7 @@ public class ApplicationsResource {
         }
 
         Key cacheKey = new Key(Key.EntityType.Application,
+                // 增量拉取
                 ResponseCacheImpl.ALL_APPS_DELTA,
                 keyType, CurrentRequestVersion.get(), EurekaAccept.fromString(eurekaAccept), regions
         );
@@ -240,6 +244,9 @@ public class ApplicationsResource {
         final Response response;
 
         if (acceptEncoding != null && acceptEncoding.contains(HEADER_GZIP_VALUE)) {
+            /**
+             * @see ResponseCacheImpl#getGZIP(com.netflix.eureka.registry.Key)
+             */
              response = Response.ok(responseCache.getGZIP(cacheKey))
                     .header(HEADER_CONTENT_ENCODING, HEADER_GZIP_VALUE)
                     .header(HEADER_CONTENT_TYPE, returnMediaType)
