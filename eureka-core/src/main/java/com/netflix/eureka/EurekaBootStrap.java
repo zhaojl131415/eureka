@@ -103,6 +103,7 @@ public class EurekaBootStrap implements ServletContextListener {
 
     /**
      * Initializes Eureka, including syncing up with other Eureka peers and publishing the registry.
+     * 初始化Eureka，包括与其他Eureka对等点同步并发布注册表。
      *
      * @see
      * javax.servlet.ServletContextListener#contextInitialized(javax.servlet.ServletContextEvent)
@@ -110,7 +111,9 @@ public class EurekaBootStrap implements ServletContextListener {
     @Override
     public void contextInitialized(ServletContextEvent event) {
         try {
+            // 初始化Eureka环境，读取yml文件
             initEurekaEnvironment();
+            // 初始化Eureka上下文
             initEurekaServerContext();
 
             ServletContext sc = event.getServletContext();
@@ -208,11 +211,24 @@ public class EurekaBootStrap implements ServletContextListener {
 
         EurekaServerContextHolder.initialize(serverContext);
 
+        /**
+         * 初始化eureka上下文
+         * 开启自我保护机制阈值更新的定时任务就是在这里实现的
+         * @see DefaultEurekaServerContext#initialize()
+         */
         serverContext.initialize();
         logger.info("Initialized server context");
 
         // Copy registry from neighboring eureka node
+        /**
+         * 同步集群注册信息
+         * @see PeerAwareInstanceRegistryImpl#syncUp()
+         */
         int registryCount = registry.syncUp();
+        /**
+         * 初始化自我保护机制的阈值
+         * @see PeerAwareInstanceRegistryImpl#openForTraffic(com.netflix.appinfo.ApplicationInfoManager, int)
+         */
         registry.openForTraffic(applicationInfoManager, registryCount);
 
         // Register all monitoring statistics.

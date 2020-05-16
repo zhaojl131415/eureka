@@ -36,6 +36,7 @@ import com.netflix.discovery.EurekaClient;
 import com.netflix.discovery.EurekaClientConfig;
 import com.netflix.discovery.shared.Application;
 import com.netflix.discovery.shared.Applications;
+import com.netflix.eureka.DefaultEurekaServerConfig;
 import com.netflix.eureka.registry.rule.DownOrStartingRule;
 import com.netflix.eureka.registry.rule.FirstMatchWinsCompositeRule;
 import com.netflix.eureka.registry.rule.InstanceStatusOverrideRule;
@@ -155,6 +156,7 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
         this.numberOfReplicationsLastMin.start();
         this.peerEurekaNodes = peerEurekaNodes;
         initializedResponseCache();
+        // 开启自我保护机制阈值更新的定时任务
         scheduleRenewalThresholdUpdateTask();
         initRemoteRegionRegistry();
 
@@ -192,43 +194,57 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
      * dramatically because of network partition and to protect expiring too
      * many instances at a time.
      *
+     * 开启自我保护机制阈值更新的定时任务
      */
     private void scheduleRenewalThresholdUpdateTask() {
         timer.schedule(new TimerTask() {
                            @Override
                            public void run() {
+                               // 更新自我保护机制的阈值
                                updateRenewalThreshold();
                            }
-                       }, serverConfig.getRenewalThresholdUpdateIntervalMs(),
+                       },
+                /**
+                 * 自我保护机制阈值更新间隔时长(毫秒), 默认15分钟
+                 * @see DefaultEurekaServerConfig#getRenewalThresholdUpdateIntervalMs()
+                 */
+                serverConfig.getRenewalThresholdUpdateIntervalMs(),
                 serverConfig.getRenewalThresholdUpdateIntervalMs());
     }
 
     /**
+     * 同步集群注册信息
      * Populates the registry information from a peer eureka node. This
      * operation fails over to other nodes until the list is exhausted if the
      * communication fails.
+     * 从对等的eureka节点填充注册表信息。如果通信失败，此操作将转移到其他节点，直到耗尽列表。
      */
     @Override
     public int syncUp() {
         // Copy entire entry from neighboring DS node
+        // 用于记录同步的节点数量
         int count = 0;
 
+        // 同步重试
+        // serverConfig.getRegistrySyncRetries() 重试次数
         for (int i = 0; ((i < serverConfig.getRegistrySyncRetries()) && (count == 0)); i++) {
             if (i > 0) {
                 try {
-                    // 同步重试等待时间
+                    // 重试等待时间
                     Thread.sleep(serverConfig.getRegistrySyncRetryWaitMs());
                 } catch (InterruptedException e) {
                     logger.warn("Interrupted during registry transfer..");
                     break;
                 }
             }
-            //
+            // 启动的时候, 当前eureka的server节点, 会尝试跟eureka集群中的其他server节点同步
+            // 遍历eureka的注册节点信息
             Applications apps = eurekaClient.getApplications();
             for (Application app : apps.getRegisteredApplications()) {
                 for (InstanceInfo instance : app.getInstances()) {
                     try {
                         if (isRegisterable(instance)) {
+                            // 注册
                             register(instance, instance.getLeaseInfo().getDurationInSecs(), true);
                             count++;
                         }
@@ -241,6 +257,12 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
         return count;
     }
 
+    /**
+     * 初始化自我保护机制的阈值
+     *
+     * @param applicationInfoManager
+     * @param count                     eureka集群内的节点数量: 初始化自我保护机制的预估总数量
+     */
     @Override
     public void openForTraffic(ApplicationInfoManager applicationInfoManager, int count) {
         // Renewals happen every 30 seconds and for a minute it should be a factor of 2.
@@ -261,6 +283,7 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
         }
         logger.info("Changing status to UP");
         applicationInfoManager.setInstanceStatus(InstanceStatus.UP);
+        // 初始化/启动 服务剔除 定时器
         super.postInit();
     }
 
@@ -499,6 +522,8 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
             // The self preservation mode is disabled, hence allowing the instances to expire.
             return true;
         }
+        // numberOfRenewsPerMinThreshold 自我保护阈值
+        // 自我保护阈值 > 0 且 最后一分钟心跳续约次数 > 自我保护阈值
         return numberOfRenewsPerMinThreshold > 0 && getNumOfRenewsInLastMin() > numberOfRenewsPerMinThreshold;
     }
 
@@ -534,6 +559,7 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
      * renewals. The threshold is a percentage as specified in
      * {@link EurekaServerConfig#getRenewalPercentThreshold()} of renewals
      * received per minute {@link #getNumOfRenewsInLastMin()}.
+     * 更新自我保护机制的阈值
      */
     private void updateRenewalThreshold() {
         try {
@@ -552,6 +578,7 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
                 if ((count) > (serverConfig.getRenewalPercentThreshold() * expectedNumberOfClientsSendingRenews)
                         || (!this.isSelfPreservationModeEnabled())) {
                     this.expectedNumberOfClientsSendingRenews = count;
+                    // 更新自我保护机制的阈值
                     updateRenewsPerMinThreshold();
                 }
             }

@@ -99,7 +99,9 @@ public class ApplicationsResource {
     }
 
     /**
+     * 服务发现入口
      * Get information about all {@link com.netflix.discovery.shared.Applications}.
+     * 获取所有Applications的信息。也就是我们常说的eureka服务注册表
      *
      * @param version the version of the request.
      * @param acceptHeader the accept header to indicate whether to serve JSON or XML data.
@@ -150,8 +152,12 @@ public class ApplicationsResource {
                 keyType, CurrentRequestVersion.get(), EurekaAccept.fromString(eurekaAccept), regions
         );
 
+        //
         Response response;
         if (acceptEncoding != null && acceptEncoding.contains(HEADER_GZIP_VALUE)) {
+            /**
+             * @see ResponseCacheImpl#getGZIP(com.netflix.eureka.registry.Key)
+             */
             response = Response.ok(responseCache.getGZIP(cacheKey))
                     .header(HEADER_CONTENT_ENCODING, HEADER_GZIP_VALUE)
                     .header(HEADER_CONTENT_TYPE, returnMediaType)

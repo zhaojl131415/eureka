@@ -33,11 +33,7 @@ import java.util.zip.GZIPOutputStream;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Supplier;
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
-import com.google.common.cache.RemovalListener;
-import com.google.common.cache.RemovalNotification;
+import com.google.common.cache.*;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Multimaps;
 import com.netflix.appinfo.EurekaAccept;
@@ -45,6 +41,7 @@ import com.netflix.appinfo.InstanceInfo;
 import com.netflix.discovery.converters.wrappers.EncoderWrapper;
 import com.netflix.discovery.shared.Application;
 import com.netflix.discovery.shared.Applications;
+import com.netflix.eureka.DefaultEurekaServerConfig;
 import com.netflix.eureka.EurekaServerConfig;
 import com.netflix.eureka.Version;
 import com.netflix.eureka.resources.CurrentRequestVersion;
@@ -77,7 +74,9 @@ public class ResponseCacheImpl implements ResponseCache {
 
     private static final Logger logger = LoggerFactory.getLogger(ResponseCacheImpl.class);
 
+    // 全量
     public static final String ALL_APPS = "ALL_APPS";
+    // 增量
     public static final String ALL_APPS_DELTA = "ALL_APPS_DELTA";
 
     // FIXME deprecated, here for backwards compatibility.
@@ -115,19 +114,27 @@ public class ResponseCacheImpl implements ResponseCache {
 
     /**
      * 三级缓存:
-     * 获取: 首先进入只读缓存,没找到进入读写缓存,读写缓存注册了监听器, 如果还是没有取到, 就执行监听器的逻辑, 从真实数据中拿
+     * 三级缓存架构设计原理:
+     * 首先为了提高eureka的性能, 在eureka中读操作要远大于写操作, 而读写操作不区分的话, 很容易造成读写冲突, 所以通过这种方式的读写分离, 能大大降低读写冲突.
+     *
+     * 获取流程: 首先进入只读缓存, 没找到进入读写缓存, 读写缓存注册了监听器, 如果还是没有取到, 就执行监听器的逻辑, 从真实数据中拿
+     *
+     * 缓存延迟: 只读缓存计时器延迟30s + eureka客户端(可以理解为业务微服务)缓存延迟30s + ribbon负载均衡缓存的本地注册表更新延迟60s = 120s
+     *
      * 修改:
      * 只读缓存:
-     *      保证eureka高可用的关键, 可以关闭, 但是关闭还不如用zk
-     *      数据只会来源于读写缓存,不能主动更新, 只能通过定时器每30s从读写缓存中拿取
+     *      提升效率, 保证eureka高可用的关键, 但是不保证强一致性, 只读缓存的延迟上面有介绍
+     *      如果要保证强一致性, 只读缓存可以关闭, 但是关闭后性能还不如用zk
+     *      数据只会来源于读写缓存, 不能主动更新, 只能通过定时器每30s从读写缓存中拿取
      *      定时任务去读写缓存拿, eureka延时原因之一
      * 读写缓存:guava
-     *      读写分离, 写并发加锁, 加只读缓存会提升效率
+     *      读写分离, 写并发加锁, 为了给真实数据降压
      * 真实数据:内存
+     *      也就是之前提到的已注册的微服务缓存池: {@link AbstractInstanceRegistry#registry}
      */
 
     /**
-     * 只读缓存
+     * 只读缓存: 只能通过定时器每30s从读写缓存中拿取
      */
     private final ConcurrentMap<Key, Value> readOnlyCacheMap = new ConcurrentHashMap<Key, Value>();
 
@@ -135,6 +142,9 @@ public class ResponseCacheImpl implements ResponseCache {
      * guava 读写缓存: 为了给真实数据降压
      */
     private final LoadingCache<Key, Value> readWriteCacheMap;
+    /**
+     * 是否使用只读缓存, 默认为true
+     */
     private final boolean shouldUseReadOnlyResponseCache;
     private final AbstractInstanceRegistry registry;
     private final EurekaServerConfig serverConfig;
@@ -143,15 +153,23 @@ public class ResponseCacheImpl implements ResponseCache {
     ResponseCacheImpl(EurekaServerConfig serverConfig, ServerCodecs serverCodecs, AbstractInstanceRegistry registry) {
         this.serverConfig = serverConfig;
         this.serverCodecs = serverCodecs;
+        /**
+         * 是否使用只读缓存, 默认为true
+         * @see DefaultEurekaServerConfig#shouldUseReadOnlyResponseCache()
+         */
         this.shouldUseReadOnlyResponseCache = serverConfig.shouldUseReadOnlyResponseCache();
         this.registry = registry;
 
         long responseCacheUpdateIntervalMs = serverConfig.getResponseCacheUpdateIntervalMs();
+
         // 读写缓存初始化
         this.readWriteCacheMap =
-                // 初始容量 1000
+                /**
+                 * 初始读写缓存容量大小, 默认1000
+                 * @see DefaultEurekaServerConfig#getInitialCapacityOfResponseCache()
+                 */
                 CacheBuilder.newBuilder().initialCapacity(serverConfig.getInitialCapacityOfResponseCache())
-                        // 默认过期时间 180s
+                        // 读写缓存默认过期时间 180s
                         .expireAfterWrite(serverConfig.getResponseCacheAutoExpirationInSeconds(), TimeUnit.SECONDS)
                         // 移除的监听器
                         .removalListener(new RemovalListener<Key, Value>() {
@@ -164,6 +182,7 @@ public class ResponseCacheImpl implements ResponseCache {
                                 }
                             }
                         })
+                        // 加载
                         .build(new CacheLoader<Key, Value>() {
                             @Override
                             public Value load(Key key) throws Exception {
@@ -171,6 +190,7 @@ public class ResponseCacheImpl implements ResponseCache {
                                     Key cloneWithNoRegions = key.cloneWithoutRegions();
                                     regionSpecificKeys.put(cloneWithNoRegions, key);
                                 }
+                                // 服务发现: 读写缓存去真实数据获取数据
                                 Value value = generatePayload(key);
                                 return value;
                             }
@@ -191,12 +211,14 @@ public class ResponseCacheImpl implements ResponseCache {
         }
     }
 
-    // 定时任务: 只读缓存从读写缓存中拿,
+    // 定时任务: 只读缓存从读写缓存中拿
     private TimerTask getCacheUpdateTask() {
         return new TimerTask() {
             @Override
             public void run() {
                 logger.debug("Updating the client cache from response cache");
+                // todo 只更新 只读缓存 现有的?,
+                // 只读缓存的新增在服务发现时,就已经加入到读写缓存中了
                 for (Key key : readOnlyCacheMap.keySet()) {
                     if (logger.isDebugEnabled()) {
                         logger.debug("Updating the client cache from response cache for key : {} {} {} {}",
@@ -204,8 +226,11 @@ public class ResponseCacheImpl implements ResponseCache {
                     }
                     try {
                         CurrentRequestVersion.set(key.getVersion());
+                        // 从读写缓存中获取
                         Value cacheValue = readWriteCacheMap.get(key);
+                        // 从只读缓存中获取
                         Value currentCacheValue = readOnlyCacheMap.get(key);
+                        // 如果读写缓存和只读缓存的值不一致, 则将只读缓存中的值更新为读写缓存的值
                         if (cacheValue != currentCacheValue) {
                             readOnlyCacheMap.put(key, cacheValue);
                         }
@@ -256,6 +281,7 @@ public class ResponseCacheImpl implements ResponseCache {
      *         applications.
      */
     public byte[] getGZIP(Key key) {
+        // 拿到微服务信息
         Value payload = getValue(key, shouldUseReadOnlyResponseCache);
         if (payload == null) {
             return null;
@@ -270,20 +296,23 @@ public class ResponseCacheImpl implements ResponseCache {
     }
 
     /**
-     * 更新读写缓存: 使特定应用程序的缓存无效。
+     * 失效读写缓存: 使特定应用程序的缓存无效。
      * Invalidate the cache of a particular application.
      *
-     * @param appName the application name of the application.
+     * @param appName the application name of the application. 微服务名
      */
     @Override
     public void invalidate(String appName, @Nullable String vipAddress, @Nullable String secureVipAddress) {
         for (Key.KeyType type : Key.KeyType.values()) {
             for (Version v : Version.values()) {
                 invalidate(
+                        // 更新当前微服务名所在的微服务缓存 EurekaAccept.full/compact 表示数据压缩/未压缩
                         new Key(Key.EntityType.Application, appName, type, v, EurekaAccept.full),
                         new Key(Key.EntityType.Application, appName, type, v, EurekaAccept.compact),
+                        // 更新全量微服务缓存
                         new Key(Key.EntityType.Application, ALL_APPS, type, v, EurekaAccept.full),
                         new Key(Key.EntityType.Application, ALL_APPS, type, v, EurekaAccept.compact),
+                        // 更新增量微服务缓存
                         new Key(Key.EntityType.Application, ALL_APPS_DELTA, type, v, EurekaAccept.full),
                         new Key(Key.EntityType.Application, ALL_APPS_DELTA, type, v, EurekaAccept.compact)
                 );
@@ -298,7 +327,7 @@ public class ResponseCacheImpl implements ResponseCache {
     }
 
     /**
-     * 更新缓存: 给定键列表，使缓存信息无效。
+     * 失效读写缓存: 给定键列表，使缓存信息无效。
      * Invalidate the cache information given the list of keys.
      *
      * @param keys the list of keys for which the cache information needs to be invalidated.
@@ -308,6 +337,10 @@ public class ResponseCacheImpl implements ResponseCache {
             logger.debug("Invalidating the response cache key : {} {} {} {}, {}",
                     key.getEntityType(), key.getName(), key.getVersion(), key.getType(), key.getEurekaAccept());
 
+            /**
+             * 更新读写缓存
+             * @see LocalCache.LocalManualCache#invalidate(java.lang.Object)
+             */
             readWriteCacheMap.invalidate(key);
             Collection<Key> keysWithRegions = regionSpecificKeys.get(key);
             if (null != keysWithRegions && !keysWithRegions.isEmpty()) {
@@ -375,25 +408,31 @@ public class ResponseCacheImpl implements ResponseCache {
     }
 
     /**
-     * 以压缩和未压缩的形式获取有效负载。
+     * 从缓存中获取
+     *
      * Get the payload in both compressed and uncompressed form.
+     * 以压缩和未压缩的形式获取有效负载。
+     * @param useReadOnlyCache 是否使用只读缓存, 默认为true
      */
     @VisibleForTesting
     Value getValue(final Key key, boolean useReadOnlyCache) {
         Value payload = null;
         try {
-            // 判断是否开启只读缓存
+            // 判断是否开启只读缓存, 默认开启
             if (useReadOnlyCache) {
                 // 从只读缓存中拿
                 final Value currentPayload = readOnlyCacheMap.get(key);
                 if (currentPayload != null) {
+                    // 从只读缓存中获取到了
                     payload = currentPayload;
                 } else {
                     // 拿不到去读写缓存中拿
                     payload = readWriteCacheMap.get(key);
+                    // 将读写缓存中读到的结果同步到只读缓存
                     readOnlyCacheMap.put(key, payload);
                 }
             } else {
+                // 去读写缓存中拿
                 payload = readWriteCacheMap.get(key);
             }
         } catch (Throwable t) {
@@ -403,7 +442,10 @@ public class ResponseCacheImpl implements ResponseCache {
     }
 
     /**
+     * 获取真实数据
+     *
      * Generate pay load with both JSON and XML formats for all applications.
+     * 为所有应用程序生成JSON和XML格式的pay load。
      */
     private String getPayLoad(Key key, Applications apps) {
         EncoderWrapper encoderWrapper = serverCodecs.getEncoder(key.getType(), key.getEurekaAccept());
@@ -438,7 +480,7 @@ public class ResponseCacheImpl implements ResponseCache {
     }
 
     /**
-     * 拿取真实数据
+     * 服务发现: 读写缓存去真实数据获取数据
      * 为给定的密钥生成有效负载。
      * Generate pay load for the given key.
      */
@@ -451,12 +493,22 @@ public class ResponseCacheImpl implements ResponseCache {
                     boolean isRemoteRegionRequested = key.hasRegions();
                     // 全量获取
                     if (ALL_APPS.equals(key.getName())) {
-                        // 是否需要远程区域
+                        /**
+                         * 不管是否需要远程区域, 最终都是调用 {@link AbstractInstanceRegistry#getApplicationsFromMultipleRegions(java.lang.String[])} 去真实数据获取全量数据
+                         * 在这个方法中 会遍历真实的微服务缓存池 {@link AbstractInstanceRegistry#registry}
+                         */
+                        // 是否需要远程区域, 一般用不到
                         if (isRemoteRegionRequested) {
                             tracer = serializeAllAppsWithRemoteRegionTimer.start();
+                            /**
+                             * registry.getApplicationsFromMultipleRegions() 最后调用 {@link AbstractInstanceRegistry#getApplicationsFromMultipleRegions(java.lang.String[])} 去真实数据获取全量数据
+                             */
                             payload = getPayLoad(key, registry.getApplicationsFromMultipleRegions(key.getRegions()));
                         } else {
                             tracer = serializeAllAppsTimer.start();
+                            /**
+                             * registry.getApplications() 最后调用 {@link AbstractInstanceRegistry#getApplicationsFromMultipleRegions(java.lang.String[])} 去真实数据获取全量数据
+                             */
                             payload = getPayLoad(key, registry.getApplications());
                         }
                     // 增量获取
@@ -465,6 +517,9 @@ public class ResponseCacheImpl implements ResponseCache {
                             tracer = serializeDeltaAppsWithRemoteRegionTimer.start();
                             versionDeltaWithRegions.incrementAndGet();
                             versionDeltaWithRegionsLegacy.incrementAndGet();
+                            /**
+                             * registry.getApplicationDeltasFromMultipleRegions() 最后调用 {@link AbstractInstanceRegistry#getApplicationDeltasFromMultipleRegions(java.lang.String[])} 去真实数据获取增量数据
+                             */
                             payload = getPayLoad(key,
                                     registry.getApplicationDeltasFromMultipleRegions(key.getRegions()));
                         } else {

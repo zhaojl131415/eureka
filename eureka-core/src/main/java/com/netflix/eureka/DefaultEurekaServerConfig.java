@@ -214,6 +214,9 @@ public class DefaultEurekaServerConfig implements EurekaServerConfig {
                         (10 * 60 * 1000)).get();
     }
 
+    /**
+     * 自我保护机制阈值更新间隔时长(毫秒), 默认15分钟
+     */
     @Override
     public int getRenewalThresholdUpdateIntervalMs() {
         return configInstance.getIntProperty(
@@ -235,6 +238,7 @@ public class DefaultEurekaServerConfig implements EurekaServerConfig {
         return configured > 0 ? configured : 30;
     }
 
+    // 获取自我保护机制阈值百分比 85%
     @Override
     public double getRenewalPercentThreshold() {
         return configInstance.getDoubleProperty(
@@ -310,6 +314,7 @@ public class DefaultEurekaServerConfig implements EurekaServerConfig {
                 .get();
     }
 
+    // 服务剔除定时任务间隔时间, 默认为60s
     @Override
     public long getEvictionIntervalTimerInMs() {
         return configInstance.getLongProperty(
@@ -339,6 +344,7 @@ public class DefaultEurekaServerConfig implements EurekaServerConfig {
                 (10 * 60 * 1000)).get();  // defaults to longer than the asg update interval
     }
 
+    // 读写缓存默认过期时间 180s
     @Override
     public long getResponseCacheAutoExpirationInSeconds() {
         return configInstance.getIntProperty(
@@ -351,6 +357,10 @@ public class DefaultEurekaServerConfig implements EurekaServerConfig {
                 namespace + "responseCacheUpdateIntervalMs", (30 * 1000)).get();
     }
 
+    /**
+     * 是否使用只读缓存, 默认为true
+     * @return
+     */
     @Override
     public boolean shouldUseReadOnlyResponseCache() {
         return configInstance.getBooleanProperty(
@@ -599,6 +609,7 @@ public class DefaultEurekaServerConfig implements EurekaServerConfig {
                 .get();
     }
 
+    // 禁用对其他区域的透明回退, 默认为false
     @Override
     public boolean disableTransparentFallbackToOtherRegion() {
         return configInstance.getBooleanProperty(namespace + "remoteRegion.disable.transparent.fallback", false).get();
@@ -703,6 +714,10 @@ public class DefaultEurekaServerConfig implements EurekaServerConfig {
                 namespace + "minAvailableInstancesForPeerReplication", -1).get();
     }
 
+    /**
+     * 初始读写缓存容量大小, 默认1000
+     * @return
+     */
     @Override
     public int getInitialCapacityOfResponseCache() {
         return configInstance.getIntProperty(namespace + "initialCapacityOfResponseCache", 1000).get();

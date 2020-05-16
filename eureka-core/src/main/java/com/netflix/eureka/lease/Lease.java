@@ -92,7 +92,7 @@ public class Lease<T> {
     }
 
     /**
-     * 服务取消
+     * 服务剔除/下架
      * Cancels the lease by updating the eviction time.
      */
     public void cancel() {

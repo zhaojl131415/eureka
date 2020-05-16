@@ -288,6 +288,9 @@ public class InstanceResource {
     public Response cancelLease(
             @HeaderParam(PeerEurekaNode.HEADER_REPLICATION) String isReplication) {
         try {
+            /**
+             * @see PeerAwareInstanceRegistryImpl#cancel(java.lang.String, java.lang.String, boolean)
+             */
             boolean isSuccess = registry.cancel(app.getName(), id,
                 "true".equals(isReplication));
 

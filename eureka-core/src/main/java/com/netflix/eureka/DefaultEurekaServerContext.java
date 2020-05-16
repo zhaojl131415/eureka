@@ -20,6 +20,7 @@ import com.netflix.appinfo.ApplicationInfoManager;
 import com.netflix.discovery.DiscoveryManager;
 import com.netflix.eureka.cluster.PeerEurekaNodes;
 import com.netflix.eureka.registry.PeerAwareInstanceRegistry;
+import com.netflix.eureka.registry.PeerAwareInstanceRegistryImpl;
 import com.netflix.eureka.resources.ServerCodecs;
 import com.netflix.eureka.util.EurekaMonitors;
 import com.netflix.eureka.util.ServoControl;
@@ -66,6 +67,11 @@ public class DefaultEurekaServerContext implements EurekaServerContext {
         logger.info("Initializing ...");
         peerEurekaNodes.start();
         try {
+            /**
+             * 初始化
+             * 1 开启自我保护机制阈值更新的定时任务
+             * @see PeerAwareInstanceRegistryImpl#init(com.netflix.eureka.cluster.PeerEurekaNodes)
+             */
             registry.init(peerEurekaNodes);
         } catch (Exception e) {
             throw new RuntimeException(e);

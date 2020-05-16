@@ -379,16 +379,18 @@ public interface EurekaServerConfig {
     /**
      * Get the number of times that a eureka node would try to get the registry
      * information from the peers during startup.
+     * 获取eureka节点在启动期间尝试从对等节点获取注册表信息的次数。
      *
-     * @return the number of retries
+     * @return the number of retries 重试次数: 可yml配置
      */
     int getRegistrySyncRetries();
 
     /**
      * Get the wait/sleep time between each retry sync attempts, if the prev retry failed and there are
      * more retries to attempt.
+     * 获得每次重试同步尝试之间的等待/睡眠时间，如果prev重试失败，并且有更多的重试尝试尝试。
      *
-     * @return the wait time in ms between each sync retries
+     * @return the wait time in ms between each sync retries 每次同步重试之间的毫秒等待时间: 可yml配置
      */
     long getRegistrySyncRetryWaitMs();
 

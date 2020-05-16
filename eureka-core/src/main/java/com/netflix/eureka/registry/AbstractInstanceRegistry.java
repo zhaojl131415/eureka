@@ -50,6 +50,7 @@ import com.netflix.discovery.EurekaClientConfig;
 import com.netflix.discovery.shared.Application;
 import com.netflix.discovery.shared.Applications;
 import com.netflix.discovery.shared.Pair;
+import com.netflix.eureka.DefaultEurekaServerConfig;
 import com.netflix.eureka.EurekaServerConfig;
 import com.netflix.eureka.lease.Lease;
 import com.netflix.eureka.registry.rule.InstanceStatusOverrideRule;
@@ -92,21 +93,29 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     private final CircularQueue<Pair<Long, String>> recentCanceledQueue;
     private ConcurrentLinkedQueue<RecentlyChangedItem> recentlyChangedQueue = new ConcurrentLinkedQueue<RecentlyChangedItem>();
 
+    /**
+     * 读写锁 : 表示进行服务发现: 读写缓存去真实数据获取增量数据时, 服务注册/剔除/下架/状态变更等操作会阻塞
+     * 这里的实现是 写用读锁, 读用写锁, 我们都知道读写锁: 读读共享, 读写互斥, 写写互斥,
+     * 而对于eureka而言, 这么实现的原因是:
+     */
     private final ReentrantReadWriteLock readWriteLock = new ReentrantReadWriteLock();
+    // 服务注册/剔除/下架/状态变更 用读锁
     private final Lock read = readWriteLock.readLock();
+    // 服务发现: 读写缓存去真实数据获取增量数据时, 用写锁
     private final Lock write = readWriteLock.writeLock();
     protected final Object lock = new Object();
 
     private Timer deltaRetentionTimer = new Timer("Eureka-DeltaRetentionTimer", true);
     private Timer evictionTimer = new Timer("Eureka-EvictionTimer", true);
+    // 最后一分钟心跳次数
     private final MeasuredRate renewsLastMin;
 
     private final AtomicReference<EvictionTask> evictionTaskRef = new AtomicReference<EvictionTask>();
 
     protected String[] allKnownRemoteRegions = EMPTY_STR_ARRAY;
-    // 触发自我保护机制的阈值
+    // 触发自我保护机制的阈值: 跟每分钟发送心跳的次数有关系
     protected volatile int numberOfRenewsPerMinThreshold;
-    // 预估心跳值(所有注册的服务发送心跳的次数) 服务注册和服务下架是修改
+    // 预估心跳值(所有注册的服务发送心跳的次数) 服务注册和服务下架时修改
     protected volatile int expectedNumberOfClientsSendingRenews;
 
     protected final EurekaServerConfig serverConfig;
@@ -124,6 +133,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
         this.recentCanceledQueue = new CircularQueue<Pair<Long, String>>(1000);
         this.recentRegisteredQueue = new CircularQueue<Pair<Long, String>>(1000);
 
+        // 最后一分钟心跳次数实例化, 传参: 取样间隔时间 60s 也就是一分钟
         this.renewsLastMin = new MeasuredRate(1000 * 60 * 1);
 
         this.deltaRetentionTimer.schedule(getDeltaRetentionTask(),
@@ -290,6 +300,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
             registrant.setActionType(ActionType.ADDED);
             recentlyChangedQueue.add(new RecentlyChangedItem(lease));
             registrant.setLastUpdatedTimestamp();
+            // 失效读写缓存
             invalidateCache(registrant.getAppName(), registrant.getVIPAddress(), registrant.getSecureVipAddress());
             logger.info("Registered instance {}/{} with status {} (replication={})",
                     registrant.getAppName(), registrant.getId(), registrant.getStatus(), isReplication);
@@ -331,6 +342,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
             Map<String, Lease<InstanceInfo>> gMap = registry.get(appName);
             Lease<InstanceInfo> leaseToCancel = null;
             if (gMap != null) {
+                // 服务剔除/下架从真实缓存中移除
                 leaseToCancel = gMap.remove(id);
             }
             recentCanceledQueue.add(new Pair<Long, String>(System.currentTimeMillis(), appName + "(" + id + ")"));
@@ -338,11 +350,13 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
             if (instanceStatus != null) {
                 logger.debug("Removed instance id {} from the overridden map which has value {}", id, instanceStatus.name());
             }
+            // 判断需要被剔除/下架的服务是否null
             if (leaseToCancel == null) {
                 CANCEL_NOT_FOUND.increment(isReplication);
                 logger.warn("DS: Registry: cancel failed because Lease is not registered for: {}/{}", appName, id);
                 return false;
             } else {
+                // 服务剔除/下架 租债器记录剔除时间
                 leaseToCancel.cancel();
                 InstanceInfo instanceInfo = leaseToCancel.getHolder();
                 String vip = null;
@@ -354,6 +368,10 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
                     vip = instanceInfo.getVIPAddress();
                     svip = instanceInfo.getSecureVipAddress();
                 }
+                /**
+                 * 失效读写缓存
+                 * @see ResponseCacheImpl#invalidate(java.lang.String, java.lang.String, java.lang.String)
+                 */
                 invalidateCache(appName, vip, svip);
                 logger.info("Cancelled instance {}/{} (replication={})", appName, id, isReplication);
                 return true;
@@ -364,6 +382,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     }
 
     /**
+     * 心跳续约
      * Marks the given instance of the given app name as renewed, and also marks whether it originated from
      * replication.
      *
@@ -407,6 +426,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
 
                 }
             }
+            // 最后一分钟心跳次数累加1
             renewsLastMin.increment();
             // 调用租债器启动心跳续约
             leaseToRenew.renew();
@@ -614,7 +634,13 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     public void evict(long additionalLeaseMs) {
         logger.debug("Running the evict task");
 
-        // 判断自我保护
+        /**
+         * 判断自我保护, 如果触发了自我保护机制, 直接返回
+         *
+         * 15分钟检查一次，检查心跳续约正常的服务和所有的服务，如果有超过15%的服务没有正常心跳续约，会把15%的服务剔除掉，就触发自我保护。
+         *
+         * @see PeerAwareInstanceRegistryImpl#isLeaseExpirationEnabled()
+         */
         if (!isLeaseExpirationEnabled()) {
             logger.debug("DS: lease expiration is currently disabled.");
             return;
@@ -632,8 +658,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
                 // 遍历到具体的微服务实例
                 for (Entry<String, Lease<InstanceInfo>> leaseEntry : leaseMap.entrySet()) {
                     Lease<InstanceInfo> lease = leaseEntry.getValue();
-                    // todo 过期时间有bug?
-                    // 判断过期时间:
+                    // 判断服务是否过期时间
                     if (lease.isExpired(additionalLeaseMs) && lease.getHolder() != null) {
                         expiredLeases.add(lease);
                     }
@@ -643,16 +668,20 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
 
         // To compensate for GC pauses or drifting local time, we need to use current registry size as a base for
         // triggering self-preservation. Without that we would wipe out full registry.
-        // 判断需要剔除的服务数量是否达到自我保护的阈值
+        // 为了补偿GC暂停或本地时间漂移，我们需要使用当前注册表大小作为触发自我保存的基础。如果没有它，我们就会把整个注册表删除。
+
         // 获取所有注册的微服务 假设为100
         int registrySize = (int) getLocalRegistrySize();
-        // 计算自我保护的阈值 假设计算出为85
+        /**
+         * 计算自我保护的阈值 默认自我保护阈值百分比为85% 假设计算出自我保护的阈值为85
+         * @see DefaultEurekaServerConfig#getRenewalPercentThreshold()
+         */
         int registrySizeThreshold = (int) (registrySize * serverConfig.getRenewalPercentThreshold());
         // 计算超出阈值的数量 假设超出阈值的数量为 100 - 85 = 15
         int evictionLimit = registrySize - registrySizeThreshold;
 
-        // 防止超出阈值的大量服务被剔除, 如果超出阈值的数量和
-        // 比较超出阈值的数量(假设15)和需要剔除的数量(20), 取小(15)
+        // 防止超出阈值的大量服务被剔除, 比较自我保护阈值的数量和需要剔除的服务数量, 取小
+        // 也就是说假设总共服务数量有100个, 根据自我保护阈值算出最多剔除15个, 但是现在需要剔除过期的服务有20, 这里取小也只能剔除15个, 从20个里随机剔除15个
         int toEvict = Math.min(expiredLeases.size(), evictionLimit);
         if (toEvict > 0) {
             logger.info("Evicting {} items (expired={}, evictionLimit={})", toEvict, expiredLeases.size(), evictionLimit);
@@ -663,12 +692,11 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
                 int next = i + random.nextInt(expiredLeases.size() - i);
                 Collections.swap(expiredLeases, i, next);
                 Lease<InstanceInfo> lease = expiredLeases.get(i);
-
                 String appName = lease.getHolder().getAppName();
                 String id = lease.getHolder().getId();
                 EXPIRED.increment();
                 logger.warn("DS: Registry: expired lease for {}/{}", appName, id);
-                // 服务下架
+                // 服务剔除, 不用集群同步, 因为集群其他节点也会执行剔除, 所以不用同步
                 internalCancel(appName, id, false);
             }
         }
@@ -724,13 +752,16 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     }
 
     /**
+     *
      * Get all applications in this instance registry, falling back to other regions if allowed in the Eureka config.
+     * 获取这个实例注册表中的所有应用程序，如果在Eureka配置中允许，返回到其他区域。
      *
      * @return the list of all known applications
      *
      * @see com.netflix.discovery.shared.LookupService#getApplications()
      */
     public Applications getApplications() {
+        // 禁用对其他区域的透明回退, 默认为false
         boolean disableTransparentFallback = serverConfig.disableTransparentFallbackToOtherRegion();
         if (disableTransparentFallback) {
             return getApplicationsFromLocalRegionOnly();
@@ -757,6 +788,8 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     }
 
     /**
+     * 读写缓存去真实数据获取全量数据
+     *
      * This method will return applications with instances from all passed remote regions as well as the current region.
      * Thus, this gives a union view of instances from multiple regions. <br/>
      * The application instances for which this union will be done can be restricted to the names returned by
@@ -787,7 +820,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
         }
         Applications apps = new Applications();
         apps.setVersion(1L);
-        // 遍历真实的服务map
+        // 遍历真实的服务数据缓存map
         for (Entry<String, Map<String, Lease<InstanceInfo>>> entry : registry.entrySet()) {
             Application app = null;
 
@@ -900,7 +933,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     }
 
     /**
-     * 获取增量
+     * 服务发现: 读写缓存去真实数据获取增量数据(当前方法过期)
      * Get the registry information about the delta changes. The deltas are
      * cached for a window specified by
      * {@link EurekaServerConfig#getRetentionTimeInMSInDeltaQueue()}. Subsequent
@@ -965,6 +998,8 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     }
 
     /**
+     * 服务发现: 读写缓存去真实数据获取增量数据
+     *
      * Gets the application delta also including instances from the passed remote regions, with the instances from the
      * local region. <br/>
      *
@@ -1180,6 +1215,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     }
 
     /**
+     * 获取最后分钟心跳续约的次数
      * Servo route; do not call.
      *
      * @return servo data
@@ -1228,17 +1264,25 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
         return list;
     }
 
+    /**
+     * 失效读写缓存
+     */
     private void invalidateCache(String appName, @Nullable String vipAddress, @Nullable String secureVipAddress) {
         // invalidate cache
+        /**
+         * @see ResponseCacheImpl#invalidate(java.lang.String, java.lang.String, java.lang.String)
+         */
         responseCache.invalidate(appName, vipAddress, secureVipAddress);
     }
 
     /**
+     *
      * 自我保护机制的阈值更改的条件
-     * 1 15分钟自动更改 com.netflix.eureka.registry.PeerAwareInstanceRegistryImpl#scheduleRenewalThresholdUpdateTask()
-     * 2 服务注册 com.netflix.eureka.registry.AbstractInstanceRegistry#register(com.netflix.appinfo.InstanceInfo, int, boolean)
-     * 3 服务下架 com.netflix.eureka.registry.PeerAwareInstanceRegistryImpl#cancel(java.lang.String, java.lang.String, boolean)
-     * 4 服务初始化 com.netflix.eureka.registry.PeerAwareInstanceRegistryImpl#openForTraffic(com.netflix.appinfo.ApplicationInfoManager, int)
+     * 1 定时任务15分钟自动更改 {@link PeerAwareInstanceRegistryImpl#scheduleRenewalThresholdUpdateTask()}
+     * 2 服务注册 {@link #register(com.netflix.appinfo.InstanceInfo, int, boolean)}
+     * 3 服务下架 {@link PeerAwareInstanceRegistryImpl#cancel(java.lang.String, java.lang.String, boolean)}
+     * 4 服务初始化 {@link PeerAwareInstanceRegistryImpl#openForTraffic(com.netflix.appinfo.ApplicationInfoManager, int)}
+     *
      */
     protected void updateRenewsPerMinThreshold() {
         // 计算触发自我保护机制的阈值
@@ -1276,6 +1320,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
         if (evictionTaskRef.get() != null) {
             evictionTaskRef.get().cancel();
         }
+        // 初始化一个服务剔除的定时任务
         evictionTaskRef.set(new EvictionTask());
         evictionTimer.schedule(evictionTaskRef.get(),
                 serverConfig.getEvictionIntervalTimerInMs(),
@@ -1298,7 +1343,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
         return overriddenInstanceStatusMap.size();
     }
 
-    // 剔除定时任务
+    // 剔除定时任务 默认60s
     /* visible for testing */ class EvictionTask extends TimerTask {
 
         private final AtomicLong lastExecutionNanosRef = new AtomicLong(0l);
@@ -1306,10 +1351,10 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
         @Override
         public void run() {
             try {
-                //
+                // 获取定时任务间隔时间
                 long compensationTimeMs = getCompensationTimeMs();
                 logger.info("Running the evict task with compensationTime {}ms", compensationTimeMs);
-                // 集群服务剔除
+                // 剔除因为长时间没有发送心跳的服务
                 evict(compensationTimeMs);
             } catch (Throwable e) {
                 logger.error("Could not run the evict task", e);
@@ -1321,6 +1366,8 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
          * vs the configured amount of time for execution. This is useful for cases where changes in time (due to
          * clock skew or gc for example) causes the actual eviction task to execute later than the desired time
          * according to the configured cycle.
+         * 计算补偿时间，补偿时间定义为自prev迭代以来执行此任务的实际时间与配置的执行时间量。
+         * 这对于时间变化(例如由于时钟倾斜或gc)导致实际执行的回收任务比根据配置的周期所需的时间晚的情况非常有用。
          */
         long getCompensationTimeMs() {
             long currNanos = getCurrentTimeNano();
@@ -1330,6 +1377,10 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
             }
 
             long elapsedMs = TimeUnit.NANOSECONDS.toMillis(currNanos - lastNanos);
+            /**
+             * 服务剔除定时任务间隔时间, 默认为60s
+             * @see DefaultEurekaServerConfig#getEvictionIntervalTimerInMs()
+             */
             long compensationTime = elapsedMs - serverConfig.getEvictionIntervalTimerInMs();
             return compensationTime <= 0l ? 0l : compensationTime;
         }
