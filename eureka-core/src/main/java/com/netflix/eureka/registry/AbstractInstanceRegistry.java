@@ -360,15 +360,16 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
                 logger.warn("DS: Registry: cancel failed because Lease is not registered for: {}/{}", appName, id);
                 return false;
             } else {
-                // 服务剔除/下架 租债器记录剔除时间
+                // 服务剔除/下架
+                // 更新服务实例的剔除时间
                 leaseToCancel.cancel();
                 InstanceInfo instanceInfo = leaseToCancel.getHolder();
                 String vip = null;
                 String svip = null;
                 if (instanceInfo != null) {
-                    // 服务操作类型
+                    // 设置服务实例的操作类型
                     instanceInfo.setActionType(ActionType.DELETED);
-                    // 添加到最近改变过状态的微服务实例队列
+                    // 添加到最近改变过状态的服务实例队列
                     recentlyChangedQueue.add(new RecentlyChangedItem(leaseToCancel));
                     instanceInfo.setLastUpdatedTimestamp();
                     vip = instanceInfo.getVIPAddress();
@@ -400,7 +401,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
         Map<String, Lease<InstanceInfo>> gMap = registry.get(appName);
         Lease<InstanceInfo> leaseToRenew = null;
         if (gMap != null) {
-            // 根据微服务服务id, 获取微服务实例租债器
+            // 根据微服务实例id, 获取微服务实例租债器
             leaseToRenew = gMap.get(id);
         }
         // 如果微服务实例为空
@@ -687,10 +688,10 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
          * @see DefaultEurekaServerConfig#getRenewalPercentThreshold()
          */
         int registrySizeThreshold = (int) (registrySize * serverConfig.getRenewalPercentThreshold());
-        // 计算超出阈值的数量 假设超出阈值的数量为 100 - 85 = 15
+        // 计算允许剔除的最大限制: 即超出自我保护阈值的数量 假设超出阈值的数量为 100 - 85 = 15
         int evictionLimit = registrySize - registrySizeThreshold;
 
-        // 防止超出阈值的大量服务被剔除, 比较自我保护阈值的数量和需要剔除的服务数量, 取小
+        // 防止超出阈值的大量服务被剔除, 比较超出自我保护阈值的数量和需要剔除的服务数量, 取小
         // 也就是说假设总共服务数量有100个, 根据自我保护阈值算出最多剔除15个, 但是现在需要剔除过期的服务有20, 这里取小也只能剔除15个, 从20个里随机剔除15个
         int toEvict = Math.min(expiredLeases.size(), evictionLimit);
         if (toEvict > 0) {

@@ -152,6 +152,7 @@ public class DiscoveryClient implements EurekaClient {
     private final Provider<HealthCheckHandler> healthCheckHandlerProvider;
     private final Provider<HealthCheckCallback> healthCheckCallbackProvider;
     private final PreRegistrationHandler preRegistrationHandler;
+    // 客户端本地注册表
     private final AtomicReference<Applications> localRegionApps = new AtomicReference<Applications>();
     private final Lock fetchRegistryUpdateLock = new ReentrantLock();
     // monotonically increasing generation counter to ensure stale threads do not reset registry to an older version
@@ -1037,12 +1038,12 @@ public class DiscoveryClient implements EurekaClient {
             // 拿到客户端本地的eureka服务注册表缓存数据
             Applications applications = getApplications();
 
-            // 是否禁用增量拉取
+            // 是否禁用增量拉取, 默认配置为false
             if (clientConfig.shouldDisableDelta()
                     // 判断有没有配置vip地址:
                     // vip:配置当前eureka client对某几个eureka client的注册地址新建
                     || (!Strings.isNullOrEmpty(clientConfig.getRegistryRefreshSingleVipAddress()))
-                    // 强制获取全量注册表
+                    // 强制获取全量注册表, 一般指定为false
                     || forceFullRegistryFetch
                     // 初始化: 客户端本地的eureka服务注册表缓存数据为空
                     || (applications == null)
@@ -1427,6 +1428,7 @@ public class DiscoveryClient implements EurekaClient {
                     // 服务注册表缓存刷新线程
                     new CacheRefreshThread()
             );
+            // 初始化服务发现的定时任务 30s一次
             scheduler.schedule(
                     cacheRefreshTask,
                     registryFetchIntervalSeconds, TimeUnit.SECONDS);
@@ -1437,7 +1439,7 @@ public class DiscoveryClient implements EurekaClient {
             int expBackOffBound = clientConfig.getHeartbeatExecutorExponentialBackOffBound();
             logger.info("Starting heartbeat executor: " + "renew interval is: {}", renewalIntervalInSecs);
 
-            // Heartbeat timer 心跳连接
+            // Heartbeat timer 心跳续约
             heartbeatTask = new TimedSupervisorTask(
                     "heartbeat",
                     scheduler,
@@ -1448,6 +1450,7 @@ public class DiscoveryClient implements EurekaClient {
                     // 心跳线程: 调用续约方法, 如果续约失败, 发送注册请求
                     new HeartbeatThread()
             );
+            // 初始化心跳续约的定时任务 30s一次
             scheduler.schedule(
                     heartbeatTask,
                     renewalIntervalInSecs, TimeUnit.SECONDS);

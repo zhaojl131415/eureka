@@ -20,7 +20,7 @@ public abstract class InstanceReplicationTask extends ReplicationTask {
 
     private final InstanceInfo instanceInfo;
     private final InstanceStatus overriddenStatus;
-
+    // 是否为集群节点同步请求
     private final boolean replicateInstanceInfo;
 
     protected InstanceReplicationTask(String peerNodeName, Action action, String appName, String id) {

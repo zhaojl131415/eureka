@@ -221,7 +221,7 @@ public class EurekaBootStrap implements ServletContextListener {
 
         // Copy registry from neighboring eureka node
         /**
-         * 同步集群注册信息
+         * 同步集群注册信息: 获取server集群节点, 然后遍历向各server集群节点注册当前节点信息
          * @see PeerAwareInstanceRegistryImpl#syncUp()
          */
         int registryCount = registry.syncUp();

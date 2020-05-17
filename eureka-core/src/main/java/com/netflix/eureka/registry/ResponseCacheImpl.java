@@ -218,7 +218,7 @@ public class ResponseCacheImpl implements ResponseCache {
             public void run() {
                 logger.debug("Updating the client cache from response cache");
                 // todo 只更新 只读缓存 现有的?,
-                // 只读缓存的新增在服务发现时,就已经加入到读写缓存中了
+                // 只读缓存的新增在服务发现时, 就已经加入到读写缓存中了
                 for (Key key : readOnlyCacheMap.keySet()) {
                     if (logger.isDebugEnabled()) {
                         logger.debug("Updating the client cache from response cache for key : {} {} {} {}",
@@ -338,7 +338,7 @@ public class ResponseCacheImpl implements ResponseCache {
                     key.getEntityType(), key.getName(), key.getVersion(), key.getType(), key.getEurekaAccept());
 
             /**
-             * 更新读写缓存
+             * 从读写缓存中移除
              * @see LocalCache.LocalManualCache#invalidate(java.lang.Object)
              */
             readWriteCacheMap.invalidate(key);

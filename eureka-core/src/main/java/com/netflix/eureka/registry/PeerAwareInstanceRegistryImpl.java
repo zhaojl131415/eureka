@@ -213,7 +213,8 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
     }
 
     /**
-     * 同步集群注册信息
+     * 同步集群注册信息: 获取server集群节点, 然后遍历向各server集群节点注册当前节点信息
+     *
      * Populates the registry information from a peer eureka node. This
      * operation fails over to other nodes until the list is exhausted if the
      * communication fails.
@@ -238,13 +239,14 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
                 }
             }
             // 启动的时候, 当前eureka的server节点, 会尝试跟eureka集群中的其他server节点同步
-            // 遍历eureka的注册节点信息
+            // 获取server集群节点
             Applications apps = eurekaClient.getApplications();
+            // 遍历向各server集群节点注册当前节点信息
             for (Application app : apps.getRegisteredApplications()) {
                 for (InstanceInfo instance : app.getInstances()) {
                     try {
                         if (isRegisterable(instance)) {
-                            // 注册
+                            // 注册当前节点信息
                             register(instance, instance.getLeaseInfo().getDurationInSecs(), true);
                             count++;
                         }
@@ -259,6 +261,8 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
 
     /**
      * 初始化自我保护机制的阈值
+     * 初始化/启动 服务剔除 定时器
+     *
      *
      * @param applicationInfoManager
      * @param count                     eureka集群内的节点数量: 初始化自我保护机制的预估总数量
@@ -268,6 +272,7 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
         // Renewals happen every 30 seconds and for a minute it should be a factor of 2.
         // 预计需要接收到心跳连接的客户端数量
         this.expectedNumberOfClientsSendingRenews = count;
+        // 初始化更新自我保护机制的阈值
         updateRenewsPerMinThreshold();
         logger.info("Got {} instances from neighboring DS node", count);
         logger.info("Renew threshold is: {}", numberOfRenewsPerMinThreshold);
@@ -517,7 +522,7 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
     // 是否启用租约到期
     @Override
     public boolean isLeaseExpirationEnabled() {
-        // 是否启用自我保护模式
+        // 是否启用自我保护模式, 默认为true
         if (!isSelfPreservationModeEnabled()) {
             // The self preservation mode is disabled, hence allowing the instances to expire.
             return true;
@@ -716,12 +721,13 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
                     node.cancel(appName, id);
                     break;
                 case Heartbeat:
+                    // 集群同步心跳
                     InstanceStatus overriddenStatus = overriddenInstanceStatusMap.get(id);
                     infoFromRegistry = getInstanceByAppAndId(appName, id, false);
                     node.heartbeat(appName, id, infoFromRegistry, overriddenStatus, false);
                     break;
                 case Register:
-                    // 注册
+                    // 集群同步注册
                     node.register(info);
                     break;
                 case StatusUpdate:
